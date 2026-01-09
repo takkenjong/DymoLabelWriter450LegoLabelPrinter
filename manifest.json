@@ -1,0 +1,28 @@
+
+{
+  "manifest_version": 3,
+  "name": "Gemini Label Studio",
+  "version": "1.1",
+  "description": "AI-powered LEGO labeling for BrickLink and BrickArchitect.",
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://localhost:41951/*",
+    "https://brickarchitect.com/*",
+    "https://*.bricklink.com/*"
+  ],
+  "action": {
+    "default_popup": "index.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://brickarchitect.com/*",
+        "https://www.bricklink.com/v2/catalog/catalogitem.page*"
+      ],
+      "js": ["contentScript.js"]
+    }
+  ]
+}

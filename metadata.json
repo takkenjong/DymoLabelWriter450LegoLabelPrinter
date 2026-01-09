@@ -1,0 +1,5 @@
+{
+  "name": "Lego Label Printer",
+  "description": "A modern AI-powered label design and printing application that connects to the DYMO Connect service.",
+  "requestFramePermissions": []
+}
