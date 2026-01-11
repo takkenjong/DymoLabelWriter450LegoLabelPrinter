@@ -34,7 +34,12 @@ export async function getSmartLabelSuggestions(userInput: string): Promise<Gemin
       }
     });
 
-    return parseSafeJson(response.text);
+    // Access .text property directly and handle potential undefined value
+    const textOutput = response.text;
+    if (!textOutput) {
+      throw new Error("Empty response from Gemini API");
+    }
+    return parseSafeJson(textOutput);
   } catch (error) {
     console.error("Gemini Suggestion Error:", error);
     return [{

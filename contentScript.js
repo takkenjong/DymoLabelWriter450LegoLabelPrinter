@@ -1,6 +1,6 @@
 /**
  * Standalone Content Script for Gemini Label Studio
- * Synchronized with the latest templates from constants.tsx
+ * Supports both BrickLink and BrickArchitect (Single Parts & Categories)
  */
 
 const BRUSHES_STATIC = `<Brushes>
@@ -212,6 +212,56 @@ const BRICK_PART_LABEL_XML = `<?xml version="1.0" encoding="utf-8"?>
   </DYMOLabel>
 </DesktopLabel>`;
 
+const CATEGORY_XML_TEMPLATE = `<?xml version="1.0" encoding="utf-8"?>
+<DesktopLabel Version="1">
+  <DYMOLabel Version="4">
+    <Description>LEGO Category Label</Description>
+    <Orientation>Portrait</Orientation>
+    <LabelName>S0722540 multipurpose</LabelName>
+    <InitialLength>0</InitialLength>
+    <BorderStyle>SolidLine</BorderStyle>
+    ${XML_METADATA}
+    <DynamicLayoutManager>
+      <RotationBehavior>ClearObjects</RotationBehavior>
+      <LabelObjects>
+        <TextObject>
+          <Name>Title</Name>
+          ${BRUSHES_TRANS}
+          ${STANDARD_PROPS}
+          <HorizontalAlignment>Left</HorizontalAlignment><VerticalAlignment>Middle</VerticalAlignment><FitMode>AlwaysFit</FitMode><IsVertical>False</IsVertical>
+          <FormattedText>
+            <FitMode>AlwaysFit</FitMode><HorizontalAlignment>Left</HorizontalAlignment><VerticalAlignment>Middle</VerticalAlignment><IsVertical>False</IsVertical>
+            <LineTextSpan><TextSpan><Text>{PART_ID}</Text>${FONT_INFO('14', true)}</TextSpan></LineTextSpan>
+          </FormattedText>
+          <ObjectLayout><DYMOPoint><X>0.1</X><Y>0.05</Y></DYMOPoint><Size><Width>1.4</Width><Height>0.3</Height></Size></ObjectLayout>
+        </TextObject>
+        <TextObject>
+          <Name>Desc</Name>
+          ${BRUSHES_TRANS}
+          ${STANDARD_PROPS}
+          <HorizontalAlignment>Left</HorizontalAlignment><VerticalAlignment>Top</VerticalAlignment><FitMode>None</FitMode><IsVertical>False</IsVertical>
+          <FormattedText>
+            <FitMode>None</FitMode><HorizontalAlignment>Left</HorizontalAlignment><VerticalAlignment>Top</VerticalAlignment><IsVertical>False</IsVertical>
+            <LineTextSpan><TextSpan><Text>{PART_DESC}</Text>${FONT_INFO('7', false)}</TextSpan></LineTextSpan>
+          </FormattedText>
+          <ObjectLayout><DYMOPoint><X>0.1</X><Y>0.35</Y></DYMOPoint><Size><Width>1.4</Width><Height>0.75</Height></Size></ObjectLayout>
+        </TextObject>
+        <QRCodeObject>
+          <Name>QR</Name>
+          ${BRUSHES_STATIC}
+          ${STANDARD_PROPS}
+          <BarcodeFormat>QRCode</BarcodeFormat>
+          <Data><DataString>{URL_BA}</DataString></Data>
+          <HorizontalAlignment>Center</HorizontalAlignment><VerticalAlignment>Middle</VerticalAlignment><Size>AutoFit</Size>
+          <EQRCodeType>QRCodeText</EQRCodeType><TextDataHolder><Value>{URL_BA}</Value></TextDataHolder>
+          <ObjectLayout><DYMOPoint><X>1.5</X><Y>0.5</Y></DYMOPoint><Size><Width>0.6</Width><Height>0.6</Height></Size></ObjectLayout>
+        </QRCodeObject>
+      </LabelObjects>
+    </DynamicLayoutManager>
+    <DataTable><Columns></Columns><Rows></Rows></DataTable>
+  </DYMOLabel>
+</DesktopLabel>`;
+
 const DYMO_URL = "https://localhost:41951";
 
 function wrapText(str, maxChars) {
@@ -242,35 +292,63 @@ async function getResizedBase64(url) {
   let finalUrl = url;
   if (finalUrl.startsWith('//')) finalUrl = 'https:' + finalUrl;
   
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      const maxSize = 250;
-      let w = img.width, h = img.height;
-      if (w > h) { if (w > maxSize) { h *= maxSize / w; w = maxSize; } }
-      else { if (h > maxSize) { w *= maxSize / h; h = maxSize; } }
-      canvas.width = w; canvas.height = h;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(img, 0, 0, w, h);
-      resolve(canvas.toDataURL('image/png').split(',')[1]);
-    };
-    img.onerror = () => {
-        console.warn("Failed to load image for base64 conversion:", finalUrl);
-        resolve("");
-    };
-    img.src = finalUrl;
-  });
+  try {
+    const response = await fetch(finalUrl);
+    const blob = await response.blob();
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const maxSize = 250;
+          let w = img.width, h = img.height;
+          if (w > h) { if (w > maxSize) { h *= maxSize / w; w = maxSize; } }
+          else { if (h > maxSize) { w *= maxSize / h; h = maxSize; } }
+          canvas.width = w; canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, w, h);
+          resolve(canvas.toDataURL('image/png').split(',')[1]);
+        };
+        img.src = reader.result;
+      };
+      reader.readAsDataURL(blob);
+    });
+  } catch (e) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const maxSize = 250;
+        let w = img.width, h = img.height;
+        if (w > h) { if (w > maxSize) { h *= maxSize / w; w = maxSize; } }
+        else { if (h > maxSize) { w *= maxSize / h; h = maxSize; } }
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/png').split(',')[1]);
+      };
+      img.onerror = () => resolve("");
+      img.src = finalUrl;
+    });
+  }
 }
 
-async function printLabel(printerName, labelData, isOptimized = false) {
-  let xml = isOptimized ? BRICKLINK_OPTIMIZED_XML : BRICK_PART_LABEL_XML;
+/**
+ * Updated printLabel to handle category template
+ * type: 'part' | 'optimized' | 'category'
+ */
+async function printLabel(printerName, labelData, type = 'part') {
+  let xml = BRICK_PART_LABEL_XML;
+  if (type === 'optimized') xml = BRICKLINK_OPTIMIZED_XML;
+  if (type === 'category') xml = CATEGORY_XML_TEMPLATE;
+
   const esc = (s) => (s || "").toString().replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
   xml = xml.replace(/{PART_ID}/g, esc(labelData.id));
   xml = xml.replace(/{PART_NAME}/g, esc(labelData.name).substring(0, 45));
-  xml = xml.replace(/{PART_DESC}/g, wrapText(labelData.description || "LEGO Item", 22));
+  xml = xml.replace(/{PART_DESC}/g, wrapText(labelData.description || "LEGO Item", 25));
   xml = xml.replace(/{URL_BA}/g, esc(labelData.urlBA));
   xml = xml.replace(/{URL_BL}/g, esc(labelData.urlBL));
 
@@ -308,7 +386,7 @@ async function getFirstPrinter() {
 
 const STYLE = `background-color:#10b981;color:white;border:none;padding:2px 6px;border-radius:4px;cursor:pointer;font-size:10px;font-weight:700;margin-left:4px;display:inline-block;box-shadow:0 1px 2px rgba(0,0,0,0.2);transition:all 0.2s;vertical-align:middle;line-height:1.2;z-index:9999;`;
 
-function createBtn(data, isOptimized = false) {
+function createBtn(data, type = 'part') {
   const btn = document.createElement('button');
   btn.innerText = "🖨️";
   btn.style.cssText = STYLE;
@@ -317,7 +395,7 @@ function createBtn(data, isOptimized = false) {
     const orig = btn.innerText; btn.innerText = "..."; btn.disabled = true;
     const printer = await getFirstPrinter();
     if (!printer) { alert("DYMO Connect not running."); btn.innerText = orig; btn.disabled = false; return; }
-    const ok = await printLabel(printer, data, isOptimized);
+    const ok = await printLabel(printer, data, type);
     btn.innerText = ok ? "✅" : "❌";
     setTimeout(() => { btn.innerText = orig; btn.disabled = false; }, 2000);
   };
@@ -334,100 +412,136 @@ function runBrickLink() {
     
     const nameElem = document.getElementById('item-name-title');
     if (nameElem && !nameElem.dataset.injected) {
-        let type = "LEGO Part";
-        if (idS) type = "LEGO Set";
-        if (idM) type = "LEGO Minifigure";
+        let typeKey = "P";
+        if (idS) typeKey = "S";
+        if (idM) typeKey = "M";
 
-        let details = [type];
-        
-        // 1. Theme / Subtheme scraping (using catString breadcrumb pattern)
-        const catLinks = Array.from(document.querySelectorAll('a[href*="catString="]'));
-        if (catLinks.length > 0) {
-            const theme = catLinks[0].innerText.trim();
-            details.push(`Theme: ${theme}`);
-            if (catLinks.length > 1) {
-                const subtheme = catLinks[1].innerText.trim();
-                details.push(`Sub: ${subtheme}`);
-            }
-        } else {
-            // Fallback to older category style if breadcrumbs not found
-            const cat = document.querySelector('font[color="#777777"] b')?.innerText || document.querySelector('.pc-category b')?.innerText;
-            if (cat) details.push(`Category: ${cat.trim()}`);
-        }
-        
-        // 2. Year scraping (Enhanced)
-        let yearText = "";
-        const yearSpan = document.getElementById('yearReleasedSec');
-        if (yearSpan) {
-            yearText = yearSpan.innerText.trim();
-        } else {
-            const yearLink = Array.from(document.querySelectorAll('a.links')).find(a => a.href.includes('itemYear='));
-            if (yearLink) {
-                yearText = yearLink.innerText.trim();
-            } else {
-                const yearRow = Array.from(document.querySelectorAll('td')).find(t => t.innerText.includes('Released:') || t.innerText.includes('Year Released:'));
-                if (yearRow) yearText = yearRow.nextElementSibling?.innerText.trim();
-            }
-        }
-        if (yearText) details.push(`Year: ${yearText}`);
-
-        // 3. Parts / Piece count scraping
-        const invLink = Array.from(document.querySelectorAll('a.links')).find(a => a.href.includes('catalogItemInv.asp') && !a.href.includes('viewItemType=M'));
-        if (invLink) {
-            const partCountStr = invLink.innerText.trim();
-            details.push(`Parts: ${partCountStr.split(' ')[0]}`);
-        } else {
-            const consistsRow = Array.from(document.querySelectorAll('td')).find(t => t.innerText.includes('Item Consists Of'));
-            if (consistsRow) {
-                const consistsText = consistsRow.nextElementSibling?.innerText.trim();
-                if (consistsText) details.push(`Pcs: ${consistsText.split(' ')[0]}`);
-            }
-        }
-
-        // 4. Minifigure / Sets "In" count
-        if (idM) {
-            const setsLink = Array.from(document.querySelectorAll('a.links')).find(a => a.href.includes('catalogItemIn.asp'));
-            if (setsLink) {
-                const count = setsLink.innerText.trim().split(' ')[0];
-                details.push(`In ${count} Sets`);
-            }
-        } else if (idS) {
-            const miniLink = Array.from(document.querySelectorAll('a.links')).find(a => a.href.includes('catalogItemInv.asp') && a.href.includes('viewItemType=M'));
-            if (miniLink) {
-                const count = miniLink.innerText.trim().split(' ')[0];
-                details.push(`Minifigs: ${count}`);
-            }
-        }
-
-        // 5. Image selector logic (Robust selectors)
-        let imgSrc = document.getElementById('_idImageMain')?.src 
-                   || document.getElementById('img-viewer-main-img')?.src;
-        
+        let imgSrc = document.getElementById('_idImageMain')?.src || document.getElementById('img-viewer-main-img')?.src;
         if (!imgSrc || imgSrc.includes('transparent.png')) {
-             imgSrc = document.querySelector('.pciImageMain')?.src
-                   || document.querySelector('.id-main-item-image')?.src 
-                   || document.querySelector('.main-item-image')?.src
-                   || document.querySelector('meta[property="og:image"]')?.content;
+             imgSrc = document.querySelector('.pciImageMain')?.src || document.querySelector('meta[property="og:image"]')?.content;
         }
-        
-        // Protocol fix for relative URLs
-        if (imgSrc && imgSrc.startsWith('//')) {
-          imgSrc = 'https:' + imgSrc;
-        }
+        if (imgSrc && imgSrc.startsWith('//')) imgSrc = 'https:' + imgSrc;
 
         const data = {
             id,
             name: nameElem.innerText.trim(),
             urlBA: `https://brickarchitect.com/parts/${id}`,
-            urlBL: window.location.href,
+            urlBL: `https://www.bricklink.com/v2/catalog/catalogitem.page?${typeKey}=${id}#T=S&O={"iconly":0}`,
             imgSrc: imgSrc || '',
-            description: details.join('\n')
+            description: "LEGO Item"
         };
-        nameElem.appendChild(createBtn(data, true));
+        nameElem.appendChild(createBtn(data, 'optimized'));
         nameElem.dataset.injected = "true";
     }
 }
 
+function runBrickArchitect() {
+    // 1. Single part page: /parts/3005
+    const singlePartH1 = document.querySelector('h1');
+    if (singlePartH1 && !singlePartH1.dataset.injected && window.location.pathname.match(/\/parts\/([^\/\?]+)/) && !window.location.pathname.includes('category-')) {
+        const idMatch = singlePartH1.innerText.match(/\(Part ([^\)]+)\)/);
+        const id = idMatch ? idMatch[1] : window.location.pathname.split('/').filter(x => x).pop();
+        
+        let imgSrc = document.querySelector('.partoverview img')?.src || 
+                    document.querySelector('img[src*="/parts-large/"]')?.src;
+        
+        if (imgSrc && imgSrc.startsWith('//')) imgSrc = 'https:' + imgSrc;
+
+        const data = {
+            id,
+            name: singlePartH1.innerText.split('(')[0].trim(),
+            urlBA: window.location.href,
+            urlBL: `https://www.bricklink.com/v2/catalog/catalogitem.page?P=${id}#T=S&O={"iconly":0}`,
+            imgSrc: imgSrc || '',
+            description: "LEGO Part"
+        };
+        singlePartH1.appendChild(createBtn(data, 'part'));
+        singlePartH1.dataset.injected = "true";
+    }
+
+    // 2. Category / Search results with .partcontainer
+    const cards = document.querySelectorAll('.partcontainer');
+    cards.forEach(card => {
+        if (card.dataset.injected) return;
+        
+        const link = card.closest('a');
+        if (!link) return;
+
+        const nameElem = card.querySelector('.partname');
+        const numElem = card.querySelector('.partnum');
+        const imgElem = card.querySelector('img');
+
+        if (!numElem) return;
+
+        const id = numElem.innerText.trim();
+        const name = nameElem ? nameElem.innerText.trim() : `Part ${id}`;
+        const imgSrc = imgElem ? imgElem.src : '';
+
+        const data = {
+            id,
+            name,
+            urlBA: link.href,
+            urlBL: `https://www.bricklink.com/v2/catalog/catalogitem.page?P=${id}#T=S&O={"iconly":0}`,
+            imgSrc,
+            description: "LEGO Part"
+        };
+
+        const btn = createBtn(data, 'part');
+        const textArea = card.querySelector('div[style*="display:flex"]') || card;
+        textArea.appendChild(btn);
+        card.dataset.injected = "true";
+    });
+
+    // 3. Category Headers (H1, H2, H3)
+    // Main H1 Category
+    const mainH1 = document.querySelector('h1');
+    if (mainH1 && !mainH1.dataset.injected && window.location.pathname.includes('category-')) {
+        const name = mainH1.innerText.split('(')[0].trim();
+        const summary = document.querySelector('.category_summary')?.innerText.trim();
+        const idMatch = window.location.pathname.match(/category-(\d+)/);
+        const id = idMatch ? `Category ${idMatch[1]}` : name;
+
+        const data = {
+            id: name,
+            name: "LEGO Category",
+            description: summary || "Classic LEGO parts category",
+            urlBA: window.location.href,
+            urlBL: ""
+        };
+        mainH1.appendChild(createBtn(data, 'category'));
+        mainH1.dataset.injected = "true";
+    }
+
+    // Subcategory headers (H2, H3)
+    const subHeaders = document.querySelectorAll('.partcategoryname');
+    subHeaders.forEach(header => {
+        if (header.dataset.injected) return;
+        
+        const link = header.querySelector('a');
+        if (!link) return;
+
+        const name = link.innerText.trim();
+        const summaryElem = header.nextElementSibling;
+        let summary = "";
+        if (summaryElem && (summaryElem.classList.contains('partcategorysummary') || summaryElem.classList.contains('category_summary'))) {
+            summary = summaryElem.innerText.trim();
+        }
+
+        const data = {
+            id: name,
+            name: "LEGO Category",
+            description: summary || "LEGO subcategory",
+            urlBA: link.href,
+            urlBL: ""
+        };
+
+        header.appendChild(createBtn(data, 'category'));
+        header.dataset.injected = "true";
+    });
+}
+
 setInterval(() => {
-    if (window.location.hostname.includes('bricklink.com')) runBrickLink();
+    const host = window.location.hostname;
+    if (host.includes('bricklink.com')) runBrickLink();
+    else if (host.includes('brickarchitect.com')) runBrickArchitect();
 }, 2000);
