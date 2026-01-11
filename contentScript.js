@@ -1,6 +1,6 @@
 /**
  * Standalone Content Script for Gemini Label Studio
- * Supports both BrickLink and BrickArchitect (Single Parts & Categories)
+ * Supports both BrickLink and BrickArchitect (Single Parts, Gallery & Categories)
  */
 
 const BRUSHES_STATIC = `<Brushes>
@@ -106,7 +106,7 @@ const BRICKLINK_OPTIMIZED_XML = `<?xml version="1.0" encoding="utf-8"?>
             <FitMode>None</FitMode><HorizontalAlignment>Left</HorizontalAlignment><VerticalAlignment>Top</VerticalAlignment><IsVertical>False</IsVertical>
             <LineTextSpan><TextSpan><Text>{PART_DESC}</Text>${FONT_INFO('5', true)}</TextSpan></LineTextSpan>
           </FormattedText>
-          <ObjectLayout><DYMOPoint><X>0.75</X><Y>0.55</Y></DYMOPoint><Size><Width>0.7</Width><Height>0.63</Height></Size></ObjectLayout>
+          <ObjectLayout><DYMOPoint><X>0.79</X><Y>0.55</Y></DYMOPoint><Size><Width>0.67</Width><Height>0.63</Height></Size></ObjectLayout>
         </TextObject>
         <ImageObject>
           <Name>BL-Image</Name>
@@ -287,6 +287,32 @@ function wrapText(str, maxChars) {
     return finalLines.join('&#13;');
 }
 
+async function getPriceGuideInfo(id, type) {
+    const url = `https://www.bricklink.com/catalogPG.asp?${type}=${id}`;
+    try {
+        const response = await fetch(url);
+        const text = await response.text();
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(text, 'text/html');
+        
+        let usedAvg = "N/A";
+        const rows = Array.from(doc.querySelectorAll('tr'));
+        
+        // Exclusively seeking the "Used" average from the price guide table
+        rows.forEach(row => {
+            const rowText = row.innerText || "";
+            if (rowText.includes('Average:') && rowText.includes('Used')) {
+                const cell = row.querySelector('td:last-child');
+                usedAvg = cell ? cell.innerText.trim() : "N/A";
+            }
+        });
+        
+        return { usedAvg };
+    } catch (e) {
+        return { usedAvg: "Err" };
+    }
+}
+
 async function getResizedBase64(url) {
   if (!url) return "";
   let finalUrl = url;
@@ -335,13 +361,9 @@ async function getResizedBase64(url) {
   }
 }
 
-/**
- * Updated printLabel to handle category template
- * type: 'part' | 'optimized' | 'category'
- */
-async function printLabel(printerName, labelData, type = 'part') {
-  let xml = BRICK_PART_LABEL_XML;
-  if (type === 'optimized') xml = BRICKLINK_OPTIMIZED_XML;
+async function printLabel(printerName, labelData, type = 'optimized') {
+  let xml = BRICKLINK_OPTIMIZED_XML;
+  if (type === 'part') xml = BRICK_PART_LABEL_XML;
   if (type === 'category') xml = CATEGORY_XML_TEMPLATE;
 
   const esc = (s) => (s || "").toString().replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -386,15 +408,19 @@ async function getFirstPrinter() {
 
 const STYLE = `background-color:#10b981;color:white;border:none;padding:2px 6px;border-radius:4px;cursor:pointer;font-size:10px;font-weight:700;margin-left:4px;display:inline-block;box-shadow:0 1px 2px rgba(0,0,0,0.2);transition:all 0.2s;vertical-align:middle;line-height:1.2;z-index:9999;`;
 
-function createBtn(data, type = 'part') {
+function createBtn(dataOrGetter, type = 'optimized') {
   const btn = document.createElement('button');
   btn.innerText = "🖨️";
   btn.style.cssText = STYLE;
   btn.onclick = async (e) => {
     e.preventDefault(); e.stopPropagation();
     const orig = btn.innerText; btn.innerText = "..."; btn.disabled = true;
+    
+    // Support async data fetching (for prices)
+    const data = typeof dataOrGetter === 'function' ? await dataOrGetter() : dataOrGetter;
+    
     const printer = await getFirstPrinter();
-    if (!printer) { alert("DYMO Connect not running."); btn.innerText = orig; btn.disabled = false; return; }
+    if (!printer) { alert("DYMO Connect Service not found."); btn.innerText = orig; btn.disabled = false; return; }
     const ok = await printLabel(printer, data, type);
     btn.innerText = ok ? "✅" : "❌";
     setTimeout(() => { btn.innerText = orig; btn.disabled = false; }, 2000);
@@ -412,132 +438,117 @@ function runBrickLink() {
     
     const nameElem = document.getElementById('item-name-title');
     if (nameElem && !nameElem.dataset.injected) {
-        let typeKey = "P";
-        if (idS) typeKey = "S";
-        if (idM) typeKey = "M";
+        let typeKey = idS ? "S" : (idM ? "M" : "P");
+        let typeLabel = idS ? "Set" : (idM ? "Minifig" : "Part");
 
-        let imgSrc = document.getElementById('_idImageMain')?.src || document.getElementById('img-viewer-main-img')?.src;
-        if (!imgSrc || imgSrc.includes('transparent.png')) {
-             imgSrc = document.querySelector('.pciImageMain')?.src || document.querySelector('meta[property="og:image"]')?.content;
-        }
-        if (imgSrc && imgSrc.startsWith('//')) imgSrc = 'https:' + imgSrc;
+        const getData = async () => {
+            const meta = [];
+            
+            // 1. Used Value Only (Sets/Minifigs only)
+            if (idS || idM) {
+                const prices = await getPriceGuideInfo(id, typeKey);
+                // Simple formatting: Value: $X.XX
+                meta.push(`Value: ${prices.usedAvg}`);
+            }
 
-        const data = {
-            id,
-            name: nameElem.innerText.trim(),
-            urlBA: `https://brickarchitect.com/parts/${id}`,
-            urlBL: `https://www.bricklink.com/v2/catalog/catalogitem.page?${typeKey}=${id}#T=S&O={"iconly":0}`,
-            imgSrc: imgSrc || '',
-            description: "LEGO Item"
+            // 2. Released Year
+            const year = document.getElementById('yearReleasedSec')?.innerText.trim() || 
+                         Array.from(document.querySelectorAll('td')).find(td => td.textContent.includes('Year Released:'))?.querySelector('a')?.innerText.trim();
+            if (year) meta.push(`Year: ${year}`);
+
+            // 3. Composition (Preferred Style)
+            const consistsTd = Array.from(document.querySelectorAll('td')).find(td => td.textContent.includes('Item Consists Of'));
+            if (consistsTd) {
+                const partLink = consistsTd.querySelector('a[href*="catalogItemInv.asp"]');
+                if (partLink) meta.push(`Parts: ${partLink.innerText.split(' ')[0]}`);
+                const figLink = consistsTd.querySelector('a[href*="viewItemType=M"]');
+                if (figLink) meta.push(`Figs: ${figLink.innerText.split(' ')[0]}`);
+            }
+
+            // 4. Physicals
+            const weight = document.getElementById('item-weight-info')?.innerText.trim();
+            const dim = document.getElementById('dimSec')?.innerText.trim();
+            if (weight) meta.push(`Wgt: ${weight}`);
+            if (dim) meta.push(`Dim: ${dim}`);
+
+            let imgSrc = document.getElementById('_idImageMain')?.src || document.getElementById('img-viewer-main-img')?.src;
+            if (!imgSrc || imgSrc.includes('transparent.png')) {
+                 imgSrc = document.querySelector('.pciImageMain')?.src || document.querySelector('meta[property="og:image"]')?.content;
+            }
+
+            return {
+                id,
+                name: nameElem.innerText.trim(),
+                urlBL: window.location.href,
+                urlBA: `https://brickarchitect.com/parts/${id}`,
+                imgSrc: imgSrc || '',
+                description: meta.length ? meta.join('\n') : `LEGO ${typeLabel}`
+            };
         };
-        nameElem.appendChild(createBtn(data, 'optimized'));
+        
+        nameElem.appendChild(createBtn(getData, 'optimized'));
         nameElem.dataset.injected = "true";
     }
 }
 
 function runBrickArchitect() {
-    // 1. Single part page: /parts/3005
-    const singlePartH1 = document.querySelector('h1');
-    if (singlePartH1 && !singlePartH1.dataset.injected && window.location.pathname.match(/\/parts\/([^\/\?]+)/) && !window.location.pathname.includes('category-')) {
-        const idMatch = singlePartH1.innerText.match(/\(Part ([^\)]+)\)/);
+    // Single Part Header
+    const h1 = document.querySelector('h1');
+    if (h1 && !h1.dataset.injected && window.location.pathname.match(/\/parts\/([^\/\?]+)/) && !window.location.pathname.includes('category-')) {
+        const idMatch = h1.innerText.match(/\(Part ([^\)]+)\)/);
         const id = idMatch ? idMatch[1] : window.location.pathname.split('/').filter(x => x).pop();
-        
-        let imgSrc = document.querySelector('.partoverview img')?.src || 
-                    document.querySelector('img[src*="/parts-large/"]')?.src;
-        
-        if (imgSrc && imgSrc.startsWith('//')) imgSrc = 'https:' + imgSrc;
+        let imgSrc = document.querySelector('.partoverview img')?.src || document.querySelector('img[src*="/parts-large/"]')?.src;
 
         const data = {
             id,
-            name: singlePartH1.innerText.split('(')[0].trim(),
+            name: h1.innerText.split('(')[0].trim(),
             urlBA: window.location.href,
-            urlBL: `https://www.bricklink.com/v2/catalog/catalogitem.page?P=${id}#T=S&O={"iconly":0}`,
+            urlBL: `https://www.bricklink.com/v2/catalog/catalogitem.page?P=${id}`,
             imgSrc: imgSrc || '',
             description: "LEGO Part"
         };
-        singlePartH1.appendChild(createBtn(data, 'part'));
-        singlePartH1.dataset.injected = "true";
+        h1.appendChild(createBtn(data, 'part'));
+        h1.dataset.injected = "true";
     }
 
-    // 2. Category / Search results with .partcontainer
+    // Gallery Cards
     const cards = document.querySelectorAll('.partcontainer');
     cards.forEach(card => {
         if (card.dataset.injected) return;
-        
         const link = card.closest('a');
         if (!link) return;
-
-        const nameElem = card.querySelector('.partname');
         const numElem = card.querySelector('.partnum');
+        const nameElem = card.querySelector('.partname');
         const imgElem = card.querySelector('img');
-
         if (!numElem) return;
-
         const id = numElem.innerText.trim();
-        const name = nameElem ? nameElem.innerText.trim() : `Part ${id}`;
-        const imgSrc = imgElem ? imgElem.src : '';
-
         const data = {
             id,
-            name,
+            name: nameElem ? nameElem.innerText.trim() : `Part ${id}`,
             urlBA: link.href,
-            urlBL: `https://www.bricklink.com/v2/catalog/catalogitem.page?P=${id}#T=S&O={"iconly":0}`,
-            imgSrc,
+            urlBL: `https://www.bricklink.com/v2/catalog/catalogitem.page?P=${id}`,
+            imgSrc: imgElem ? imgElem.src : '',
             description: "LEGO Part"
         };
-
-        const btn = createBtn(data, 'part');
         const textArea = card.querySelector('div[style*="display:flex"]') || card;
-        textArea.appendChild(btn);
+        textArea.appendChild(createBtn(data, 'part'));
         card.dataset.injected = "true";
     });
 
-    // 3. Category Headers (H1, H2, H3)
-    // Main H1 Category
-    const mainH1 = document.querySelector('h1');
-    if (mainH1 && !mainH1.dataset.injected && window.location.pathname.includes('category-')) {
-        const name = mainH1.innerText.split('(')[0].trim();
+    // Category Page Header
+    if (h1 && !h1.dataset.injected && window.location.pathname.includes('category-')) {
+        const name = h1.innerText.split('(')[0].trim();
         const summary = document.querySelector('.category_summary')?.innerText.trim();
-        const idMatch = window.location.pathname.match(/category-(\d+)/);
-        const id = idMatch ? `Category ${idMatch[1]}` : name;
-
         const data = {
             id: name,
-            name: "LEGO Category",
-            description: summary || "Classic LEGO parts category",
+            name: "Category",
+            description: summary || "LEGO parts category",
             urlBA: window.location.href,
             urlBL: ""
         };
-        mainH1.appendChild(createBtn(data, 'category'));
-        mainH1.dataset.injected = "true";
+        h1.appendChild(createBtn(data, 'category'));
+        h1.dataset.injected = "true";
     }
-
-    // Subcategory headers (H2, H3)
-    const subHeaders = document.querySelectorAll('.partcategoryname');
-    subHeaders.forEach(header => {
-        if (header.dataset.injected) return;
-        
-        const link = header.querySelector('a');
-        if (!link) return;
-
-        const name = link.innerText.trim();
-        const summaryElem = header.nextElementSibling;
-        let summary = "";
-        if (summaryElem && (summaryElem.classList.contains('partcategorysummary') || summaryElem.classList.contains('category_summary'))) {
-            summary = summaryElem.innerText.trim();
-        }
-
-        const data = {
-            id: name,
-            name: "LEGO Category",
-            description: summary || "LEGO subcategory",
-            urlBA: link.href,
-            urlBL: ""
-        };
-
-        header.appendChild(createBtn(data, 'category'));
-        header.dataset.injected = "true";
-    });
 }
 
 setInterval(() => {

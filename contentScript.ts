@@ -3,11 +3,11 @@ import { dymoService } from './services/dymoService';
 import { TEMPLATES } from './constants';
 import { LabelData } from './types';
 
-const BUTTON_STYLE = `margin-left:10px;background-color:#10b981;color:white;border:none;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;vertical-align:middle;box-shadow:0 1px 2px rgba(0,0,0,0.1);transition:all 0.2s;font-family:system-ui,-apple-system,sans-serif;`;
+const BUTTON_STYLE = `margin-left:4px;background-color:#10b981;color:white;border:none;padding:2px 6px;border-radius:4px;cursor:pointer;font-size:10px;font-weight:700;vertical-align:middle;box-shadow:0 1px 2px rgba(0,0,0,0.2);transition:all 0.2s;line-height:1.2;`;
 
-function createPrintButton(text: string, onPrint: () => Promise<boolean>) {
+function createPrintButton(onPrint: () => Promise<boolean>) {
   const btn = document.createElement('button');
-  btn.innerText = text ? `🖨️ ${text}` : `🖨️`;
+  btn.innerText = `🖨️`;
   btn.style.cssText = BUTTON_STYLE;
   btn.onclick = async (e) => {
     e.preventDefault(); e.stopPropagation();
@@ -23,6 +23,28 @@ function createPrintButton(text: string, onPrint: () => Promise<boolean>) {
   return btn;
 }
 
+async function fetchPriceGuideInfo(id: string, type: string) {
+    const url = `https://www.bricklink.com/catalogPG.asp?${type}=${id}`;
+    try {
+        const response = await fetch(url);
+        const text = await response.text();
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(text, 'text/html');
+        let usedAvg = "N/A";
+        
+        const rows = Array.from(doc.querySelectorAll('tr'));
+        rows.forEach(row => {
+            const rowText = row.textContent || "";
+            if (rowText.includes('Average:') && rowText.includes('Used')) {
+                usedAvg = row.querySelector('td:last-child')?.textContent?.trim() || "N/A";
+            }
+        });
+        return { usedAvg };
+    } catch (e) {
+        return { usedAvg: "Err" };
+    }
+}
+
 function initBrickLink() {
   const params = new URLSearchParams(window.location.search);
   const idP = params.get('P')?.split('__')[0];
@@ -33,159 +55,134 @@ function initBrickLink() {
   
   const nameElem = document.getElementById('item-name-title');
   if (!nameElem || nameElem.dataset.dymoInjected) return;
-  
-  let details = [];
-  let typeKey = "P";
-  if (idS) { details.push("LEGO Set"); typeKey = "S"; }
-  else if (idM) { details.push("LEGO Minifigure"); typeKey = "M"; }
-  else details.push("LEGO Part");
 
-  const cleanUrlBL = `https://www.bricklink.com/v2/catalog/catalogitem.page?${typeKey}=${id}#T=S&O={"iconly":0}`;
+  const btn = createPrintButton(async () => {
+    const meta: string[] = [];
+    const typeKey = idS ? "S" : (idM ? "M" : "P");
+    
+    // Used Value
+    if (idS || idM) {
+        const prices = await fetchPriceGuideInfo(id, typeKey);
+        meta.push(`Value: ${prices.usedAvg}`);
+    }
 
-  const labelData: LabelData = {
-    text: `${id}\n${nameElem.innerText.trim()}`,
-    id,
-    name: nameElem.innerText.trim(),
-    urlBA: `https://brickarchitect.com/parts/${id}`,
-    urlBL: cleanUrlBL,
-    imgSrc: '',
-    description: details.join('\n')
-  };
+    const year = document.getElementById('yearReleasedSec')?.textContent?.trim() || 
+                 Array.from(document.querySelectorAll('td')).find(td => td.textContent?.includes('Year Released:'))?.querySelector('a')?.textContent?.trim();
+    if (year) meta.push(`Year: ${year}`);
 
-  const btn = createPrintButton("Label", async () => {
+    const consistsTd = Array.from(document.querySelectorAll('td')).find(td => td.textContent?.includes('Item Consists Of'));
+    if (consistsTd) {
+        const partLink = consistsTd.querySelector('a[href*="catalogItemInv.asp"]');
+        if (partLink) meta.push(`Parts: ${partLink.textContent?.split(' ')[0]}`);
+        const figLink = consistsTd.querySelector('a[href*="viewItemType=M"]');
+        if (figLink) meta.push(`Figs: ${figLink.textContent?.split(' ')[0]}`);
+    }
+
+    const weight = document.getElementById('item-weight-info')?.textContent?.trim();
+    const dim = document.getElementById('dimSec')?.textContent?.trim();
+    if (weight) meta.push(`Wgt: ${weight}`);
+    if (dim) meta.push(`Dim: ${dim}`);
+
+    let imgSrc = (document.getElementById('_idImageMain') as HTMLImageElement)?.src || 
+                 (document.getElementById('img-viewer-main-img') as HTMLImageElement)?.src;
+    if (!imgSrc || imgSrc.includes('transparent.png')) {
+       imgSrc = (document.querySelector('.pciImageMain') as HTMLImageElement)?.src || 
+                (document.querySelector('meta[property="og:image"]') as HTMLMetaElement)?.content;
+    }
+
+    const labelData: LabelData = {
+      text: `${id}\n${nameElem.innerText.trim()}`,
+      id,
+      name: nameElem.innerText.trim(),
+      urlBL: window.location.href,
+      urlBA: `https://brickarchitect.com/parts/${id}`,
+      imgSrc: imgSrc || '',
+      description: meta.length ? meta.join('\n') : `LEGO Item`
+    };
+
     const printers = await dymoService.getPrinters();
     return dymoService.printLabel(printers[0].name, TEMPLATES[1], labelData);
   });
   
-  nameElem.parentNode?.appendChild(btn);
+  nameElem.appendChild(btn);
   nameElem.dataset.dymoInjected = "true";
 }
 
 function initBrickArchitect() {
-    // Single Page
     const h1 = document.querySelector('h1');
-    if (h1 && !h1.dataset.dymoInjected && !window.location.pathname.includes('category-')) {
+    if (h1 && !h1.dataset.dymoInjected && window.location.pathname.match(/\/parts\/([^\/\?]+)/) && !window.location.pathname.includes('category-')) {
         const idMatch = h1.textContent?.match(/\(Part ([^\)]+)\)/);
-        if (idMatch) {
-            const id = idMatch[1];
-            const name = h1.innerText.split('(')[0].trim();
-            const img = document.querySelector('.partoverview img') as HTMLImageElement;
-            const imgSrc = img ? img.src : '';
-
-            const labelData: LabelData = {
-                text: `${id}\n${name}`,
-                id,
-                name,
-                urlBA: window.location.href,
-                urlBL: `https://www.bricklink.com/v2/catalog/catalogitem.page?P=${id}#T=S&O={"iconly":0}`,
-                imgSrc,
-                description: "LEGO Part"
-            };
-
-            const btn = createPrintButton("Print", async () => {
-                const printers = await dymoService.getPrinters();
-                return dymoService.printLabel(printers[0].name, TEMPLATES[0], labelData);
-            });
-            h1.appendChild(btn);
-            h1.dataset.dymoInjected = "true";
-        }
-    }
-
-    // Category / Grid Cards
-    const cards = document.querySelectorAll('.partcontainer');
-    cards.forEach((card: any) => {
-        if (card.dataset.dymoInjected) return;
-        
-        const link = card.closest('a') as HTMLAnchorElement;
-        if (!link) return;
-
-        const nameElem = card.querySelector('.partname');
-        const numElem = card.querySelector('.partnum');
-        const imgElem = card.querySelector('img');
-
-        if (!numElem) return;
-
-        const id = numElem.textContent?.trim() || '';
-        const name = nameElem ? nameElem.textContent?.trim() : `Part ${id}`;
-        const imgSrc = imgElem ? imgElem.src : '';
+        const id = idMatch ? idMatch[1] : window.location.pathname.split('/').filter(x => x).pop() || "";
+        const img = document.querySelector('.partoverview img') as HTMLImageElement;
+        const imgSrc = img ? img.src : '';
+        const name = h1.innerText.split('(')[0].trim();
 
         const labelData: LabelData = {
             text: `${id}\n${name}`,
             id,
-            name: name || '',
-            urlBA: link.href,
-            urlBL: `https://www.bricklink.com/v2/catalog/catalogitem.page?P=${id}#T=S&O={"iconly":0}`,
-            imgSrc: imgSrc,
+            name,
+            urlBA: window.location.href,
+            urlBL: `https://www.bricklink.com/v2/catalog/catalogitem.page?P=${id}`,
+            imgSrc,
             description: "LEGO Part"
         };
 
-        const btn = createPrintButton("", async () => {
+        const btn = createPrintButton(async () => {
             const printers = await dymoService.getPrinters();
             return dymoService.printLabel(printers[0].name, TEMPLATES[0], labelData);
-        });
-        btn.style.padding = "2px 6px";
-        btn.style.fontSize = "10px";
-
-        const textArea = card.querySelector('div[style*="display:flex"]') || card;
-        textArea.appendChild(btn);
-        card.dataset.dymoInjected = "true";
-    });
-
-    // Main Category H1
-    if (h1 && !h1.dataset.dymoInjected && window.location.pathname.includes('category-')) {
-        const name = h1.innerText.split('(')[0].trim();
-        const summary = (document.querySelector('.category_summary') as HTMLElement)?.innerText.trim();
-        // Added missing 'text' property to satisfy LabelData interface
-        const labelData: LabelData = {
-            text: `${name}\nLEGO Category`,
-            id: name,
-            name: "LEGO Category",
-            description: summary || "Classic LEGO parts category",
-            urlBA: window.location.href,
-            urlBL: ""
-        };
-        const btn = createPrintButton("", async () => {
-            const printers = await dymoService.getPrinters();
-            return dymoService.printLabel(printers[0].name, TEMPLATES[2], labelData);
         });
         h1.appendChild(btn);
         h1.dataset.dymoInjected = "true";
     }
 
-    // Subcategories H2/H3
-    const subHeaders = document.querySelectorAll('.partcategoryname');
-    subHeaders.forEach((header: any) => {
-        if (header.dataset.dymoInjected) return;
-        const link = header.querySelector('a');
+    const cards = document.querySelectorAll('.partcontainer');
+    cards.forEach((card: any) => {
+        if (card.dataset.dymoInjected) return;
+        const link = card.closest('a') as HTMLAnchorElement;
         if (!link) return;
-
-        const name = link.innerText.trim();
-        const summaryElem = header.nextElementSibling as HTMLElement;
-        let summary = "";
-        if (summaryElem && (summaryElem.classList.contains('partcategorysummary') || summaryElem.classList.contains('category_summary'))) {
-            summary = summaryElem.innerText.trim();
-        }
-
-        // Added missing 'text' property to satisfy LabelData interface
+        const numElem = card.querySelector('.partnum');
+        const nameElem = card.querySelector('.partname');
+        const imgElem = card.querySelector('img');
+        if (!numElem) return;
+        const id = numElem.textContent?.trim() || '';
+        const name = nameElem?.textContent?.trim() || '';
+        
         const labelData: LabelData = {
-            text: `${name}\nLEGO Category`,
-            id: name,
-            name: "LEGO Category",
-            description: summary || "LEGO subcategory",
+            text: `${id}\n${name}`,
+            id,
+            name,
             urlBA: link.href,
+            urlBL: `https://www.bricklink.com/v2/catalog/catalogitem.page?P=${id}`,
+            imgSrc: imgElem ? imgElem.src : '',
+            description: "LEGO Part"
+        };
+        const btn = createPrintButton(async () => {
+            const printers = await dymoService.getPrinters();
+            return dymoService.printLabel(printers[0].name, TEMPLATES[0], labelData);
+        });
+        const textArea = card.querySelector('div[style*="display:flex"]') || card;
+        textArea.appendChild(btn);
+        card.dataset.dymoInjected = "true";
+    });
+
+    if (h1 && !h1.dataset.dymoInjected && window.location.pathname.includes('category-')) {
+        const name = h1.innerText.split('(')[0].trim();
+        const summary = (document.querySelector('.category_summary') as HTMLElement)?.innerText.trim();
+        
+        const labelData: LabelData = {
+            text: `${name}\nCategory`,
+            id: name,
+            name: "Category",
+            description: summary || "LEGO parts category",
+            urlBA: window.location.href,
             urlBL: ""
         };
-
-        const btn = createPrintButton("", async () => {
+        h1.appendChild(createPrintButton(async () => {
             const printers = await dymoService.getPrinters();
             return dymoService.printLabel(printers[0].name, TEMPLATES[2], labelData);
-        });
-        btn.style.padding = "2px 6px";
-        btn.style.fontSize = "10px";
-        
-        header.appendChild(btn);
-        header.dataset.dymoInjected = "true";
-    });
+        }));
+        h1.dataset.dymoInjected = "true";
+    }
 }
 
 const observer = new MutationObserver(() => {
